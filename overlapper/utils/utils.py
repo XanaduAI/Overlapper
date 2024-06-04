@@ -27,6 +27,7 @@
 # under the terms of the Apache License, Version 2.0 (the "License").
 
 from pyscf.fci.cistring import str2addr
+from pyscf import gto, scf
 import numpy as np
 from scipy.special import comb
 
@@ -355,3 +356,58 @@ def verify_active_space(mol, ncas, nelecas):
         raise ValueError(
             f"Active electrons {nelecas} must agree with molecule spin {spin} used in HF calculation."
         )
+
+
+def _make_mock_hf(occ_vec, h1e, eri):
+    r"""Creates a mock Hartree-Fock object to allow to execute 
+    all PySCF-derived methods while explicitly passing the 
+    one- and two-electron integral matrices and an occupation
+    number vector. Whether RHF or ROHF is used is determined by
+    the number of electrons being even or odd, respectively.
+
+    Args:
+        occ_vec (list or nd.array): Array with occupations, e.g. [2,2,1,0,0] for 5 electrons occupying the lowest of 10 spatial orbitals
+        h1e (nd.array): one-electron integrals as square array
+        eri (nd.array): two-electron integrals as four-index array, with 
+            full 8-fold symmetry (real wavefunctions)
+
+    Returns:
+        hf_mock (object): PySCF Hartree-Fock object 
+            (restricted or unrestricted, depending on occ_vec)
+    """
+
+    # create a mock molecule to pass to the mock HF object
+    mol_mock = gto.M()
+    # determine number of molecular orbitals and electrons from occ_vec
+    mol_mock.nao = len(occ_vec)
+    mol_mock.nelectron = np.sum(np.array(occ_vec))
+    # count the unpaired electrons
+    mol_mock.spin = np.sum([x for x in occ_vec if x == 1])
+    # make sure this returns zero to avoid arbitrary offsets
+    mol_mock.energy_nuc = lambda *args: 0
+
+    # create a mock HF object
+    if mol_mock.spin == 0:
+        hf_mock = scf.RHF(mol_mock)
+        # assign the occupation of orbitals
+        hf_mock.mo_occ = np.array(occ_vec)
+        # instantiate the molecular-to-atomic integrals as identity
+        hf_mock.mo_coeff = np.eye(h1e.shape[0])
+        # assign one-electron integrals
+        hf_mock.get_hcore = lambda *args: h1e
+        # assign two-electron integrals -- ensure they are 
+        hf_mock._eri = eri
+
+    elif mol_mock.spin != 0:
+        hf_mock = scf.UHF(mol_mock)
+        # assign the occupation of orbitals
+        hf_mock.mo_occ = np.array(occ_vec)
+        # instantiate the molecular-to-atomic integrals as identity
+        hf_mock.mo_coeff = np.stack((np.eye(mol_mock.nao),\
+                                     np.eye(mol_mock.nao)))
+        # assign one-electron integrals
+        hf_mock.get_hcore = lambda *args: h1e
+        # assign two-electron integrals -- ensure they are 
+        hf_mock._eri = eri
+
+    return hf_mock
